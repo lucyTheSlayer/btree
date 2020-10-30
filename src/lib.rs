@@ -4,6 +4,8 @@ pub use crate::byte::*;
 use std::marker::PhantomData;
 use anyhow::Result;
 use std::fmt::Debug;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 mod page;
 mod byte;
@@ -11,7 +13,7 @@ mod byte;
 pub struct BTree<K, V>
 {
     path: &'static str,
-    fd: File,
+    fd: Rc<RefCell<File>>,
     meta_page: Option<Page<K, V>>,
     root_page: Option<Page<K, V>>
 }
@@ -29,11 +31,12 @@ impl<K, V> BTree<K, V>
             .open(path).expect("could not open btree file");
         let mut btree = BTree::<K, V> {
             path,
-            fd,
+            fd: Rc::new(RefCell::new(fd)),
             meta_page: None,
             root_page: None,
         };
-        if btree.fd.metadata().unwrap().len() == 0 {
+        let file_len = btree.fd.as_ref().borrow().metadata().unwrap().len();
+        if file_len == 0 {
             btree.init_as_empty()
         } else {
             btree.init_load()
@@ -41,26 +44,34 @@ impl<K, V> BTree<K, V>
         btree
     }
 
+    fn sync(&mut self) -> Result<()>{
+        if let Some(p) = self.meta_page.as_mut() {
+            p.sync()?;
+        }
+        if let Some(p) = self.root_page.as_mut() {
+            p.sync()?;
+        }
+        Ok(())
+    }
+
     fn init_as_empty(&mut self) {
         println!("init empty btree");
-        let mut meta_page = Page::<K, V>::new(0, PageType::META).unwrap();
+        let mut meta_page = Page::<K, V>::new(self.fd.clone(), 0, PageType::META).unwrap();
         meta_page.set_total_page(2);
         meta_page.set_root_index(1);
-        let mut root_page = Page::<K, V>::new(1, PageType::LEAF).unwrap();
+        let mut root_page = Page::<K, V>::new(self.fd.clone(), 1, PageType::LEAF).unwrap();
         root_page.set_item_count(0).unwrap();
-
-        meta_page.sync(&mut self.fd).unwrap();
-        root_page.sync(&mut self.fd).unwrap();
 
         self.meta_page = Some(meta_page);
         self.root_page = Some(root_page);
+        self.sync().unwrap();
     }
 
     fn init_load(&mut self) {
-        let meta_page = Page::<K, V>::load(&mut self.fd, 0).unwrap();
+        let meta_page = Page::<K, V>::load(self.fd.clone(), 0).unwrap();
         assert_eq!(meta_page.page_type, PageType::META);
 
-        let root_page = Page::<K, V>::load(&mut self.fd, meta_page.root_index()).unwrap();
+        let root_page = Page::<K, V>::load(self.fd.clone(), meta_page.root_index()).unwrap();
         println!("root page index: {}; total pages:{}; root page keys: {};", meta_page.root_index(), meta_page.total_pages(), root_page.item_count());
         self.meta_page = Some(meta_page);
         self.root_page = Some(root_page);
@@ -83,7 +94,7 @@ impl<K, V> BTree<K, V>
                                 }
                             };
                             let child_page_index = p.ptr_at(ptr_index).unwrap();
-                            pages.push(Page::<K, V>::load(&mut self.fd, child_page_index).unwrap());
+                            pages.push(Page::<K, V>::load(self.fd.clone(), child_page_index).unwrap());
                             let len = pages.len();
                             p = &mut pages[len - 1];
                         }
@@ -96,7 +107,6 @@ impl<K, V> BTree<K, V>
                     match p.insert(key, value) {
                         Ok(_) => {
                             // inserted, done!
-                            p.sync(&mut self.fd)?;
                             return Ok(());
                         },
                         Err(err) => {
@@ -132,7 +142,6 @@ impl<K, V> BTree<K, V>
                         kp = Some(self.split_internal_page(p, &k, ptr)?);
                     } else {
                         p.insert_ptr(&k, ptr)?;
-                        p.sync(&mut self.fd)?;
                         return Ok(());
                     }
                 }
@@ -163,13 +172,10 @@ impl<K, V> BTree<K, V>
 
                     let meta_page = self.meta_page.as_mut().unwrap();
                     meta_page.set_root_index(new_root_page.index);
-                    new_root_page.sync(&mut self.fd)?;
-                    meta_page.sync(&mut self.fd)?;
                     self.root_page = Some(new_root_page);
                 } else {
                     let mut root_page = self.root_page.as_mut().unwrap();
                     root_page.insert_ptr(&k, ptr)?;
-                    root_page.sync(&mut self.fd)?;
                 }
             }
             None => {
@@ -185,13 +191,11 @@ impl<K, V> BTree<K, V>
 
                 let meta_page = self.meta_page.as_mut().unwrap();
                 meta_page.set_root_index(new_root_page.index);
-                new_root_page.sync(&mut self.fd)?;
-
-                meta_page.sync(&mut self.fd)?;
 
                 self.root_page = Some(new_root_page);
             }
         }
+        self.sync();
         Ok(())
     }
 
@@ -215,11 +219,11 @@ impl<K, V> BTree<K, V>
                         PageType::INTERNAL => {
                             match pos {
                                 Pos::Left => {
-                                    pages.push(Page::<K, V>::load(&mut self.fd, p.ptr_at(i).unwrap()).unwrap());
+                                    pages.push(Page::<K, V>::load(self.fd.clone(), p.ptr_at(i).unwrap()).unwrap());
                                     p = &pages[pages.len() - 1];
                                 }
                                 _ => {
-                                    pages.push(Page::<K, V>::load(&mut self.fd, p.ptr_at(i + 1).unwrap()).unwrap());
+                                    pages.push(Page::<K, V>::load(self.fd.clone(), p.ptr_at(i + 1).unwrap()).unwrap());
                                     p = &pages[pages.len() - 1];
                                 }
                             }
@@ -241,8 +245,7 @@ impl<K, V> BTree<K, V>
         let meta_page = self.meta_page.as_mut().unwrap();
         let max_index = meta_page.total_pages();
         meta_page.set_total_page(max_index + 1);
-        meta_page.sync(&mut self.fd)?;
-        Ok(Page::<K, V>::new(max_index, pt)?)
+        Ok(Page::<K, V>::new(self.fd.clone(), max_index, pt)?)
     }
 
     fn split_leaf_page(&mut self, p: &mut Page<K, V>, key: &K, value: &V) -> Result<(K, u32)> {
@@ -280,8 +283,6 @@ impl<K, V> BTree<K, V>
             new_page.set_value_at(i - cut_i, &values[i])?;
         }
 
-        new_page.sync(&mut self.fd)?;
-        p.sync(&mut self.fd)?;
         Ok((keys[cut_i].clone(), new_page.index))
     }
 
@@ -323,9 +324,6 @@ impl<K, V> BTree<K, V>
             new_page.set_key_at(i - up_i - 1, &keys[i])?;
             new_page.set_ptr_at(i - up_i, ptrs[i + 1])?;
         }
-
-        new_page.sync(&mut self.fd)?;
-        p.sync(&mut self.fd)?;
         Ok((keys[up_i].clone(), new_page.index))
     }
 }

@@ -6,6 +6,8 @@ use crate::byte::{Encodable, Decodable, BinSizer};
 use std::marker::PhantomData;
 use thiserror::Error;
 use std::fmt::{Display, Debug, Formatter};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_KEY_SIZE: usize = 128;
@@ -27,6 +29,8 @@ pub(crate) struct Page<K, V>
     values_pos: usize,
     ptrs_pos: usize,
     max_item_count: usize,
+    dirty: bool,
+    fd: Option<Rc<RefCell<File>>>,
     _k: PhantomData<K>,
     _v: PhantomData<V>,
 }
@@ -55,6 +59,8 @@ impl<K, V> Default for Page<K, V> {
             values_pos: 0,
             ptrs_pos: 0,
             max_item_count: 0,
+            dirty: false,
+            fd: None,
             _k: PhantomData,
             _v: PhantomData,
         }
@@ -65,10 +71,11 @@ impl<K, V> Page<K, V> where
     K: Encodable + Decodable + BinSizer + PartialEq + PartialOrd + Debug + Clone,
     V: Encodable + Decodable + BinSizer + Debug + Clone
 {
-    pub fn new(index: u32, pt: PageType) -> Result<Self> {
+    pub fn new(fd: Rc<RefCell<File>>, index: u32, pt: PageType) -> Result<Self> {
         let mut page = Self::default();
         page.page_type = pt;
         page.index = index;
+        page.fd = Some(fd);
         match page.page_type{
             PageType::META => {
                 page.buf[0] = 0x01;
@@ -107,20 +114,24 @@ impl<K, V> Page<K, V> where
         assert!(self.page_type == PageType::META || self.max_item_count >= 2)
     }
 
-    pub fn load(fd: &mut File, index: u32) -> Result<Self> {
+    pub fn load(fd: Rc<RefCell<File>>, index: u32) -> Result<Self> {
         let mut page = Self::default();
-        page.index = index;
-        fd.seek(SeekFrom::Start((index as usize * PAGE_SIZE) as u64))?;
-        fd.read_exact(page.buf.borrow_mut())?;
+
+        {
+            let mut _fd = fd.as_ref().borrow_mut();
+            page.index = index;
+            _fd.seek(SeekFrom::Start((index as usize * PAGE_SIZE) as u64))?;
+            _fd.read_exact(page.buf.borrow_mut())?;
+        }
+
         page.page_type = page.get_page_type();
+        page.fd = Some(fd);
         page.init_layout();
         Ok(page)
     }
 
-    pub fn sync(&mut self, fd: &mut File) -> Result<()> {
-        fd.seek(SeekFrom::Start((self.index as usize * PAGE_SIZE) as u64))?;
-        fd.write_all(self.buf.borrow())?;
-        Ok(())
+    fn mark_dirty(&mut self) {
+        self.dirty = true
     }
 
     fn get_page_type(&self) -> PageType {
@@ -154,6 +165,7 @@ impl<K, V> Page<K, V> where
         match self.page_type {
             PageType::META => {
                 root_index.encode(&mut self.buf[4..]).unwrap();
+                self.mark_dirty();
             }
             _ => panic!("not a meta page")
         }
@@ -163,6 +175,7 @@ impl<K, V> Page<K, V> where
         match self.page_type {
             PageType::META => {
                 total_page.encode(&mut self.buf[8..]).unwrap();
+                self.mark_dirty();
             },
             _ => panic!("not a meta page")
         }
@@ -187,6 +200,7 @@ impl<K, V> Page<K, V> where
                     Err(PageError::Full.into())
                 } else {
                     (item_count as u32).encode(&mut self.buf[4..]).unwrap();
+                    self.mark_dirty();
                     Ok(())
                 }
             },
@@ -240,6 +254,7 @@ impl<K, V> Page<K, V> where
                     return Err(anyhow!("over size"))
                 }
                 key.encode(&mut self.buf[(self.keys_pos + i * K::bin_size())..])?;
+                self.mark_dirty();
                 Ok(())
             }
             _ => panic!("not a internal / leaf page")
@@ -253,6 +268,7 @@ impl<K, V> Page<K, V> where
                     return Err(anyhow!("over size"))
                 }
                 value.encode(&mut self.buf[(self.values_pos + i * V::bin_size())..])?;
+                self.mark_dirty();
                 Ok(())
             }
             _ => panic!("not a leaf page")
@@ -266,6 +282,7 @@ impl<K, V> Page<K, V> where
                     return Err(anyhow!("over size"))
                 }
                 ptr.encode(&mut self.buf[(self.ptrs_pos + i * PTR_SIZE)..])?;
+                self.mark_dirty();
                 Ok(())
             }
             _ => panic!("not a internal page")
@@ -338,6 +355,7 @@ impl<K, V> Page<K, V> where
                 }
             }
         }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -380,6 +398,7 @@ impl<K, V> Page<K, V> where
                 }
             }
         }
+        self.mark_dirty();
         Ok(())
     }
 }
@@ -408,5 +427,23 @@ impl<K,V> Debug for Page<K, V> where
             }
         }
         Ok(())
+    }
+}
+
+impl<K, V> Page<K, V> {
+    pub fn sync(&mut self) -> Result<()> {
+        if self.dirty {
+            let mut fd = self.fd.as_ref().unwrap().as_ref().borrow_mut();
+            fd.seek(SeekFrom::Start((self.index as usize * PAGE_SIZE) as u64))?;
+            fd.write_all(self.buf.borrow())?;
+            self.dirty = false;
+        }
+        Ok(())
+    }
+}
+
+impl<K, V> Drop for Page<K, V> {
+    fn drop(&mut self) {
+        self.sync().unwrap();
     }
 }

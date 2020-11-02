@@ -1,7 +1,6 @@
 use std::fs::{File, OpenOptions};
-use crate::page::{Page, PAGE_SIZE, PageType, Pos, PageError};
+use crate::page::{Page, PageType, Pos, PageError};
 pub use crate::byte::*;
-use std::marker::PhantomData;
 use anyhow::Result;
 use std::fmt::Debug;
 use std::rc::Rc;
@@ -156,7 +155,7 @@ impl<K, V> BTree<K, V>
             Some((k, ptr)) => {
                 let is_root_full;
                 {
-                    let mut root_page = self.root_page.as_mut().unwrap();
+                    let root_page = self.root_page.as_mut().unwrap();
                     assert_eq!(root_page.page_type, PageType::INTERNAL);
                     is_root_full = root_page.is_full();
                 }
@@ -174,7 +173,7 @@ impl<K, V> BTree<K, V>
                     meta_page.set_root_index(new_root_page.index);
                     self.root_page = Some(new_root_page);
                 } else {
-                    let mut root_page = self.root_page.as_mut().unwrap();
+                    let root_page = self.root_page.as_mut().unwrap();
                     root_page.insert_ptr(&k, ptr)?;
                 }
             }
@@ -195,7 +194,7 @@ impl<K, V> BTree<K, V>
                 self.root_page = Some(new_root_page);
             }
         }
-        self.sync();
+        self.sync()?;
         Ok(())
     }
 
@@ -267,11 +266,11 @@ impl<K, V> BTree<K, V>
         if !inserted {
             keys.push(key.clone());
             values.push(value.clone());
-            inserted = true;
+            // inserted = true;
         }
         let cut_i =  (keys.len() + 1) / 2;
-        p.set_item_count(cut_i);
-        new_page.set_item_count(keys.len() - cut_i);
+        p.set_item_count(cut_i)?;
+        new_page.set_item_count(keys.len() - cut_i)?;
 
         for i in 0..cut_i {
             p.set_key_at(i, &keys[i])?;
@@ -307,12 +306,12 @@ impl<K, V> BTree<K, V>
         if !inserted {
             keys.push(key.clone());
             ptrs.push(ptr);
-            inserted = true;
+            // inserted = true;
         }
 
         let up_i =  (keys.len() - 1) / 2;
-        p.set_item_count(up_i);
-        new_page.set_item_count(keys.len() - up_i - 1);
+        p.set_item_count(up_i)?;
+        new_page.set_item_count(keys.len() - up_i - 1)?;
 
         for i in 0..up_i {
             p.set_key_at(i, &keys[i])?;

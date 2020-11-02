@@ -5,7 +5,7 @@ use std::borrow::{BorrowMut, Borrow};
 use crate::byte::{Encodable, Decodable, BinSizer};
 use std::marker::PhantomData;
 use thiserror::Error;
-use std::fmt::{Display, Debug, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -336,19 +336,33 @@ impl<K, V> Page<K, V> where
                     }
                     Pos::Left => {
                         self.set_item_count(old_item_count + 1)?;
-                        for j in (i..old_item_count).rev() {
-                            self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
-                            self.set_value_at(j + 1, &self.value_at(j).unwrap())?;
+                        unsafe {
+                            let buf_ptr = self.buf.as_mut_ptr();
+                            let key_ptr = buf_ptr.add(self.keys_pos);
+                            let value_ptr = buf_ptr.add(self.values_pos);
+                            std::ptr::copy(key_ptr.add(i * K::bin_size()), key_ptr.add((i + 1) * K::bin_size()), (old_item_count - i) * K::bin_size());
+                            std::ptr::copy(value_ptr.add(i * V::bin_size()), value_ptr.add((i + 1) * V::bin_size()), (old_item_count - i) * V::bin_size());
                         }
+                        // for j in (i..old_item_count).rev() {
+                        //     self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
+                        //     self.set_value_at(j + 1, &self.value_at(j).unwrap())?;
+                        // }
                         self.set_key_at(i, k)?;
                         self.set_value_at(i, v)?;
                     }
                     Pos::Right => {
                         self.set_item_count(old_item_count + 1)?;
-                        for j in ((i + 1)..old_item_count).rev() {
-                            self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
-                            self.set_value_at(j + 1, &self.value_at(j).unwrap())?;
+                        unsafe {
+                            let buf_ptr = self.buf.as_mut_ptr();
+                            let key_ptr = buf_ptr.add(self.keys_pos);
+                            let value_ptr = buf_ptr.add(self.values_pos);
+                            std::ptr::copy(key_ptr.add((i + 1) * K::bin_size()), key_ptr.add((i + 2) * K::bin_size()), (old_item_count - i - 1) * K::bin_size());
+                            std::ptr::copy(value_ptr.add((i + 1) * V::bin_size()), value_ptr.add((i + 2) * V::bin_size()), (old_item_count - i - 1) * V::bin_size());
                         }
+                        // for j in ((i + 1)..old_item_count).rev() {
+                        //     self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
+                        //     self.set_value_at(j + 1, &self.value_at(j).unwrap())?;
+                        // }
                         self.set_key_at(i + 1, k)?;
                         self.set_value_at(i + 1, v)?;
                     }
@@ -379,19 +393,33 @@ impl<K, V> Page<K, V> where
                     }
                     Pos::Left => {
                         self.set_item_count(old_item_count + 1)?;
-                        for j in (i..old_item_count).rev() {
-                            self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
-                            self.set_ptr_at(j + 2, self.ptr_at(j + 1).unwrap())?;
+                        unsafe {
+                            let buf_ptr = self.buf.as_mut_ptr();
+                            let key_ptr = buf_ptr.add(self.keys_pos);
+                            let ptr_ptr = buf_ptr.add(self.ptrs_pos);
+                            std::ptr::copy(key_ptr.add(i * K::bin_size()), key_ptr.add((i + 1) * K::bin_size()), (old_item_count - i) * K::bin_size());
+                            std::ptr::copy(ptr_ptr.add((i + 1) * PTR_SIZE), ptr_ptr.add((i + 2) * PTR_SIZE), (old_item_count - i) * PTR_SIZE);
                         }
+                        // for j in (i..old_item_count).rev() {
+                        //     self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
+                        //     self.set_ptr_at(j + 2, self.ptr_at(j + 1).unwrap())?;
+                        // }
                         self.set_key_at(i, k)?;
                         self.set_ptr_at(i + 1, ptr)?;
                     }
                     Pos::Right => {
                         self.set_item_count(old_item_count + 1)?;
-                        for j in ((i + 1)..old_item_count).rev() {
-                            self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
-                            self.set_ptr_at(j + 2, self.ptr_at(j + 1).unwrap())?;
+                        unsafe {
+                            let buf_ptr = self.buf.as_mut_ptr();
+                            let key_ptr = buf_ptr.add(self.keys_pos);
+                            let ptr_ptr = buf_ptr.add(self.ptrs_pos);
+                            std::ptr::copy(key_ptr.add((i + 1) * K::bin_size()), key_ptr.add((i + 2) * K::bin_size()), (old_item_count - i -1) * K::bin_size());
+                            std::ptr::copy(ptr_ptr.add((i + 2) * PTR_SIZE), ptr_ptr.add((i + 3) * PTR_SIZE), (old_item_count - i - 1) * PTR_SIZE);
                         }
+                        // for j in ((i + 1)..old_item_count).rev() {
+                        //     self.set_key_at(j + 1, &self.key_at(j).unwrap())?;
+                        //     self.set_ptr_at(j + 2, self.ptr_at(j + 1).unwrap())?;
+                        // }
                         self.set_key_at(i + 1, k)?;
                         self.set_ptr_at(i + 2, ptr)?;
                     }

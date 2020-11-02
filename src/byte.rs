@@ -68,7 +68,7 @@ macro_rules! float_impl {
         impl Encodable for $ty {
             fn encode(&self, buf: &mut [u8]) -> Result<usize> {
                 check_len(buf, mem::size_of::<$base>())?;
-                let mut val: $base = unsafe { mem::transmute(*self) };
+                let val: $base = unsafe { mem::transmute(*self) };
                 val.encode(buf)
             }
         }
@@ -116,9 +116,10 @@ macro_rules! define_fixed_len_str {
             fn encode(&self, buf: &mut [u8]) -> anyhow::Result<usize> {
                 check_len(buf, $capacity)?;
                 let bytes = self.0.as_bytes();
-                for i in 0..bytes.len() {
-                    buf[i] = bytes[i];
+                unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), &mut buf[0], bytes.len());
                 }
+                // std::ptr::copy_nonoverlapping(bytes, buf, bytes.len());
                 if bytes.len() < $capacity - 1 {
                     buf[bytes.len()] = 0;
                 }
